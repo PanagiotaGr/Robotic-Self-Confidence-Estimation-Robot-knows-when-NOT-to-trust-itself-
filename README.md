@@ -333,7 +333,8 @@ robot_confidence/
 **Author:**  
 Panagiota Grosdouli  
 
-This work is part of an academic exploration of **confidence-aware robotics** and is designed to be easily integrated into existing ROS 2 navigation and SLAM pipelines for research and experimentation.
+This repository reflects my personal experimental work on confidence-aware robotics.  
+The code and ideas are developed independently as part of my own exploration of how uncertainty and reliability can be incorporated into ROS 2–based navigation and SLAM systems.
 
 ---
 
