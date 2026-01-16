@@ -1,190 +1,234 @@
-# Robotic Self-Confidence Estimation  
-### *A Framework for Confidence-Aware Robot Navigation*  
+# Robotic Self-Confidence Estimation
+
+### A Framework for Confidence-Aware Robot Navigation (ROS 2 Jazzy)
+
+> A modular ROS 2 (Jazzy) baseline that estimates a robot’s **self-confidence** online and adapts navigation behaviour to improve safety and robustness under degraded perception/localization.
 
 ---
 
-## 1. Overview
+## Table of Contents
 
-This repository contains a ROS 2 (Jazzy) implementation of a **self-confidence estimation framework** for mobile robots.  
-The core objective is to enable a robot to **reason about its own reliability** and adapt its navigation strategy when its perception and localization systems become uncertain or degraded.
+* [Overview](#overview)
+* [Motivation](#motivation)
+* [Methodology](#methodology)
 
-Instead of assuming that the robot always “trusts” its sensors and algorithms, we introduce an explicit **confidence signal**:
+  * [Confidence Inputs](#confidence-inputs)
+  * [Confidence Computation](#confidence-computation)
+  * [Behaviour Switching](#behaviour-switching)
+* [ROS 2 System Architecture](#ros-2-system-architecture)
 
-\[
+  * [`confidence_estimator` Node](#confidence_estimator-node)
+  * [`navigation_behavior` Node](#navigation_behavior-node)
+* [Implementation Details](#implementation-details)
+* [Installation](#installation)
+* [Launch](#launch)
+* [Quick Testing (Synthetic Inputs)](#quick-testing-synthetic-inputs)
+* [Evaluation Plan](#evaluation-plan)
+* [Extensions & Future Work](#extensions--future-work)
+* [Repository Structure](#repository-structure)
+* [Author](#author)
+* [License](#license)
+
+---
+
+## Overview
+
+This repository contains a ROS 2 (Jazzy) implementation of a **self-confidence estimation framework** for mobile robots.
+The objective is to enable a robot to **reason about its own reliability** and adapt navigation strategy when perception and localization become uncertain or degraded.
+
+We introduce an explicit confidence signal:
+
+[
 C(t) \in [0, 1]
-\]
+]
 
-which is computed online and used to modulate the robot’s behaviour between:
-- **Aggressive navigation** (high confidence)
-- **Conservative navigation** (medium confidence)
-- **Safe / fallback mode** (low confidence; eg. stop, slow down, or ask for help)
+computed online and used to modulate behaviour between:
 
-This idea is particularly relevant to **autonomous driving, field robotics, and safety-critical navigation**, where overconfident systems can be dangerous and underconfident systems can be inefficient.
+* **Aggressive navigation** (high confidence)
+* **Conservative navigation** (medium confidence)
+* **Safe / fallback mode** (low confidence; e.g., stop, slow down, or request help)
 
----
-
-## 2. Problem Formulation & Motivation
-
-Modern robotic systems rely on a complex stack of perception and localization components (e.g., VO, SLAM, sensor fusion, mapping). In practice, these components:
-
-- Are affected by sensor noise, occlusions, lighting conditions, dynamic obstacles.
-- Can degrade or fail silently, causing catastrophic behaviour if the planner keeps trusting them.
-- Typically do **not** expose an explicit, calibrated “trust” signal to downstream modules.
-
-The key research question is:
-
-> **Can we design a principled confidence estimator that aggregates uncertainty cues from the perception stack and exposes a scalar signal \(C(t)\), which can be used by the navigation system to improve safety and robustness?**
-
-This repository implements a **first, modular baseline** for such a system.
+This is especially relevant to **autonomous driving, field robotics, and safety-critical navigation**, where overconfidence can be dangerous and underconfidence can be inefficient.
 
 ---
 
-## 3. Methodology
+## Motivation
 
-### 3.1 Confidence Inputs
+Modern robotic stacks depend on perception and localization modules (VO, SLAM, sensor fusion, mapping). In practice, these components:
+
+* Are affected by noise, occlusions, lighting changes, and dynamic obstacles.
+* Can degrade or fail silently, while the planner keeps “trusting” the outputs.
+* Typically do **not** expose a calibrated “trust” signal to downstream navigation.
+
+**Research question:**
+
+> Can we design a principled confidence estimator that aggregates uncertainty cues from the perception stack and exposes a scalar signal (C(t)) usable by navigation to improve safety and robustness?
+
+This repository implements a **first, modular baseline**.
+
+---
+
+## Methodology
+
+### Confidence Inputs
 
 The confidence estimator ingests four normalized signals:
 
-- **Visual Odometry Uncertainty**  
-  `vo_uncertainty ∈ [0, 1]`  
-  Interpreted as: 0 = highly reliable VO, 1 = highly uncertain VO.
+* **Visual Odometry Uncertainty**
+  `vo_uncertainty ∈ [0, 1]`
+  0 = highly reliable VO, 1 = highly uncertain VO.
 
-- **SLAM Quality**  
-  `slam_quality ∈ [0, 1]`  
-  Interpreted as: 0 = poor SLAM tracking / mapping, 1 = high-quality SLAM.
+* **SLAM Quality**
+  `slam_quality ∈ [0, 1]`
+  0 = poor SLAM tracking/mapping, 1 = high-quality SLAM.
 
-- **Drift Estimate (Normalized)**  
-  `drift_norm ∈ [0, 1]`  
-  0 = negligible drift; 1 = severe drift (e.g., large discrepancy between odometry and ground truth or loop closures).
+* **Drift Estimate (Normalized)**
+  `drift_norm ∈ [0, 1]`
+  0 = negligible drift, 1 = severe drift (e.g., discrepancy between odometry and ground truth or loop closures).
 
-- **Sensor Noise Level**  
-  `sensor_noise ∈ [0, 1]`  
-  0 = clean measurements; 1 = very noisy sensing (e.g., heavy LiDAR or camera noise).
+* **Sensor Noise Level**
+  `sensor_noise ∈ [0, 1]`
+  0 = clean measurements, 1 = very noisy sensing (e.g., heavy LiDAR or camera noise).
 
-All inputs are assumed to be **pre-normalized** to \([0, 1]\) by upstream modules or simple normalization heuristics.
+All inputs are assumed to be **pre-normalized** to ([0,1]) by upstream modules or simple heuristics.
 
 ---
 
-### 3.2 Confidence Computation
+### Confidence Computation
 
-The confidence estimator computes a scalar score:
+The scalar confidence score is computed as:
 
-\[
-C(t) = \text{clip}_{[0,1]} \big(
-w_{\text{vo}} (1 - u_{\text{vo}}) + 
+[
+C(t) = \text{clip}*{[0,1]} \Big(
+w*{\text{vo}} (1 - u_{\text{vo}}) +
 w_{\text{slam}} q_{\text{slam}} +
 w_{\text{drift}} (1 - d) +
 w_{\text{noise}} (1 - n)
-\big)
-\]
+\Big)
+]
 
 where:
 
-- \(u_{\text{vo}}\) = `vo_uncertainty`  
-- \(q_{\text{slam}}\) = `slam_quality`  
-- \(d\) = `drift_norm`  
-- \(n\) = `sensor_noise`  
-- \(w_{\text{vo}}, w_{\text{slam}}, w_{\text{drift}}, w_{\text{noise}}\) are non-negative weights
-- The weights are normalized internally such that \(\sum_i w_i = 1\).
+* (u_{\text{vo}}) = `vo_uncertainty`
+* (q_{\text{slam}}) = `slam_quality`
+* (d) = `drift_norm`
+* (n) = `sensor_noise`
+* (w_{\text{vo}}, w_{\text{slam}}, w_{\text{drift}}, w_{\text{noise}}) are non-negative weights
+* Weights are normalized internally so that (\sum_i w_i = 1)
 
-Intuitively:
+**Intuition**
 
-- High uncertainty, drift, and noise **decrease** confidence.
-- High SLAM quality **increases** confidence.
+* High VO uncertainty, drift, and noise **decrease** confidence.
+* High SLAM quality **increases** confidence.
 
-This design is deliberately simple and transparent, making it easy to extend later with:
-- Learning-based models,
-- Bayesian fusion,
-- Calibration techniques.
+This design is deliberately simple and transparent, enabling future extensions (learning-based models, Bayesian fusion, calibration).
 
 ---
 
-### 3.3 Behaviour Switching
+### Behaviour Switching
 
-The confidence score is mapped to **navigation modes** via two thresholds:
+Confidence is mapped to **navigation modes** via thresholds:
 
-- `th_aggressive` (default: 0.7)
-- `th_conservative` (default: 0.4)
+* `th_aggressive` (default: 0.7)
+* `th_conservative` (default: 0.4)
 
-The mapping is:
+Mapping:
 
-- If \(C(t) \geq \text{th_aggressive}\) → `AGGRESSIVE`
-- Else if \(C(t) \geq \text{th_conservative}\) → `CONSERVATIVE`
-- Else → `SAFE`
+* If (C(t) \ge \text{th_aggressive}) → `AGGRESSIVE`
+* Else if (C(t) \ge \text{th_conservative}) → `CONSERVATIVE`
+* Else → `SAFE`
 
-Each mode can be associated with different:
-- Maximum linear/angular velocity,
-- Obstacle clearance margins,
-- Planner cost parameters,
-- Fallback or stop behaviours.
+Each mode can correspond to different:
 
-In this baseline implementation, the mode directly controls a **velocity limit**.
+* Maximum linear/angular velocity
+* Obstacle clearance margins
+* Planner cost parameters
+* Fallback/stop behaviours
 
----
-
-## 4. ROS 2 System Architecture
-
-The system is organized into two core ROS 2 nodes:
-
-### 4.1 `confidence_estimator` Node
-
-**Responsibilities:**
-- Subscribe to perception and localization quality indicators.
-- Compute a normalized confidence score \(C(t)\).
-- Publish:
-  - `/robot_confidence` (Float32)
-  - `/navigation_mode` (String)
-
-**Subscriptions:**
-
-| Topic              | Type               | Description                               |
-|--------------------|--------------------|-------------------------------------------|
-| `/vo_uncertainty`  | `std_msgs/Float32` | VO uncertainty, 0 = good, 1 = bad        |
-| `/slam_quality`    | `std_msgs/Float32` | SLAM quality, 0 = poor, 1 = excellent    |
-| `/drift_norm`      | `std_msgs/Float32` | Normalized drift [0, 1]                  |
-| `/sensor_noise`    | `std_msgs/Float32` | Normalized noise level [0, 1]            |
-
-**Publications:**
-
-| Topic               | Type               | Description                                       |
-|---------------------|--------------------|---------------------------------------------------|
-| `/robot_confidence` | `std_msgs/Float32` | Scalar confidence \(C(t)\) ∈ [0, 1]              |
-| `/navigation_mode`  | `std_msgs/String`  | `AGGRESSIVE`, `CONSERVATIVE`, or `SAFE`          |
+In this baseline, the mode directly controls a **velocity limit**.
 
 ---
 
-### 4.2 `navigation_behavior` Node
+## ROS 2 System Architecture
 
-**Responsibilities:**
-- Subscribe to `/navigation_mode`.
-- Map the current mode to a **velocity limit**.
-- Publish:
-  - `/cmd_vel_limit` (Float32)
+Two ROS 2 nodes:
 
-**Publications:**
-
-| Topic            | Type               | Description                                 |
-|------------------|--------------------|---------------------------------------------|
-| `/cmd_vel_limit` | `std_msgs/Float32` | Maximum allowed linear velocity (m/s)       |
-
-This node is intended to be integrated with:
-- A navigation stack (e.g., Nav2) as a constraint,
-- A velocity filter that clips `/cmd_vel` commands according to `/cmd_vel_limit`.
-
----
-
-## 5. Implementation Details
-
-- **ROS 2 Distribution:** Jazzy
-- **Language:** Python (`rclpy`)
-- **Package name:** `robot_confidence`
-- **Build type:** `ament_python`
-
-The configurable parameters (weights, thresholds, speed limits) are provided via a YAML configuration file and loaded in the launch file.
+```
+/vo_uncertainty   /slam_quality   /drift_norm   /sensor_noise
+      \              |             /              /
+       \             |            /              /
+        +---------------- confidence_estimator ----------------+
+        |                  publishes:                          |
+        |   /robot_confidence (Float32), /navigation_mode       |
+        +------------------------+------------------------------+
+                                 |
+                                 v
+                    navigation_behavior
+                     publishes:
+                     /cmd_vel_limit (Float32)
+```
 
 ---
 
-## 6. Installation
+### `confidence_estimator` Node
+
+**Responsibilities**
+
+* Subscribes to perception/localization indicators
+* Computes (C(t))
+* Publishes confidence and navigation mode
+
+**Subscriptions**
+
+| Topic             | Type               | Description                           |
+| ----------------- | ------------------ | ------------------------------------- |
+| `/vo_uncertainty` | `std_msgs/Float32` | VO uncertainty, 0 = good, 1 = bad     |
+| `/slam_quality`   | `std_msgs/Float32` | SLAM quality, 0 = poor, 1 = excellent |
+| `/drift_norm`     | `std_msgs/Float32` | Normalized drift [0, 1]               |
+| `/sensor_noise`   | `std_msgs/Float32` | Normalized noise level [0, 1]         |
+
+**Publications**
+
+| Topic               | Type               | Description                          |
+| ------------------- | ------------------ | ------------------------------------ |
+| `/robot_confidence` | `std_msgs/Float32` | Scalar confidence (C(t)) ∈ [0,1]     |
+| `/navigation_mode`  | `std_msgs/String`  | `AGGRESSIVE`, `CONSERVATIVE`, `SAFE` |
+
+---
+
+### `navigation_behavior` Node
+
+**Responsibilities**
+
+* Subscribes to `/navigation_mode`
+* Maps mode to a velocity limit
+* Publishes `/cmd_vel_limit`
+
+**Publications**
+
+| Topic            | Type               | Description                       |
+| ---------------- | ------------------ | --------------------------------- |
+| `/cmd_vel_limit` | `std_msgs/Float32` | Max allowed linear velocity (m/s) |
+
+Integration targets:
+
+* Nav2 constraints
+* A velocity filter that clips `/cmd_vel` according to `/cmd_vel_limit`
+
+---
+
+## Implementation Details
+
+* **ROS 2 Distribution:** Jazzy
+* **Language:** Python (`rclpy`)
+* **Package:** `robot_confidence`
+* **Build type:** `ament_python`
+
+Configurable parameters (weights, thresholds, speed limits) are provided via YAML and loaded in the launch file.
+
+---
+
+## Installation
 
 ```bash
 cd ~/ros2_ws/src
@@ -196,27 +240,24 @@ source install/setup.bash
 
 ---
 
-## 7. Launch
-
-To start the full confidence-aware behaviour system:
+## Launch
 
 ```bash
 ros2 launch robot_confidence confidence_system.launch.py
 ```
 
-This launches:
-- `confidence_estimator`
-- `navigation_behavior`
+Launches:
+
+* `confidence_estimator`
+* `navigation_behavior`
 
 with parameters loaded from `config/confidence_params.yaml`.
 
 ---
 
-## 8. Quick Testing (Synthetic Inputs)
+## Quick Testing (Synthetic Inputs)
 
-To quickly test the pipeline, you can manually publish test values.
-
-### 8.1 Publish perception signals
+### 1) Publish perception signals
 
 In a second terminal:
 
@@ -225,7 +266,7 @@ cd ~/ros2_ws
 source install/setup.bash
 ```
 
-Then, for example:
+Then publish example values:
 
 ```bash
 ros2 topic pub /vo_uncertainty std_msgs/Float32 "data: 0.1" -1
@@ -234,7 +275,7 @@ ros2 topic pub /drift_norm std_msgs/Float32 "data: 0.2" -1
 ros2 topic pub /sensor_noise std_msgs/Float32 "data: 0.3" -1
 ```
 
-### 8.2 Observe outputs
+### 2) Observe outputs
 
 ```bash
 ros2 topic echo /robot_confidence
@@ -242,72 +283,65 @@ ros2 topic echo /navigation_mode
 ros2 topic echo /cmd_vel_limit
 ```
 
-With the default parameters, this configuration should produce:
-- High confidence (≈ 0.8+)
-- Mode: `AGGRESSIVE`
-- Velocity limit: ≈ 0.8 m/s
+With default parameters, this should yield:
+
+* High confidence (≈ 0.8+)
+* Mode: `AGGRESSIVE`
+* Velocity limit: ≈ 0.8 m/s
 
 ---
 
-## 9. Evaluation Plan (Research-Oriented)
+## Evaluation Plan
 
-This repository provides an implementation that can be used as the basis for an empirical study.
-
-### 9.1 Experimental Conditions
+### Experimental Conditions
 
 Compare:
 
-1. **Baseline navigation**  
-   - No confidence estimation; fixed navigation parameters.
+1. **Baseline navigation**
 
-2. **Confidence-aware navigation (this system)**  
-   - Confidence estimator enabled.
-   - Behaviour and velocity limits adapted from `/navigation_mode`.
+   * No confidence estimation; fixed navigation parameters.
 
-### 9.2 Suggested Metrics
+2. **Confidence-aware navigation (this system)**
 
-- **Collision Rate**  
-  Number of collisions per episode / trajectory.
+   * Estimator enabled.
+   * Behaviour adapted via `/navigation_mode` (velocity limit baseline).
 
-- **Mission Success Rate**  
-  Percentage of trials where the robot reaches its goal.
+### Suggested Metrics
 
-- **Recovery Success**  
-  Probability that the robot recovers from degraded perception by entering conservative or safe mode instead of failing.
+* **Collision Rate**: collisions per episode/trajectory
+* **Mission Success Rate**: percentage of trials reaching goal
+* **Recovery Success**: probability of safe adaptation under degradation
+* **Safety Under Degraded Perception**:
 
-- **Safety Under Degraded Perception**  
-  Performance when:
-  - VO uncertainty is artificially increased.
-  - SLAM tracking quality is degraded.
-  - Sensor noise is injected or simulated.
+  * Increase VO uncertainty
+  * Degrade SLAM tracking quality
+  * Inject sensor noise
 
-### 9.3 Ablation & Sensitivity
+### Ablation & Sensitivity
 
-- Effect of different weight configurations \(w_i\).
-- Effect of different thresholds (`th_aggressive`, `th_conservative`).
-- Offset or delay between perception degradation and mode adaptation.
+* Different weights (w_i)
+* Different thresholds (`th_aggressive`, `th_conservative`)
+* Delay between degradation and mode adaptation
 
 ---
 
-## 10. Extensions & Future Work
+## Extensions & Future Work
 
-This baseline is intentionally simple and transparent, so that it can be extended in multiple directions, including:
+* **Learning-based Confidence Estimation**
+  Train a small model to predict (C(t)) from richer features (covariances, tracking flags, loop closures).
 
-- **Learning-based Confidence Estimation**  
-  Training a small neural network to predict \(C(t)\) from a richer feature set (e.g., covariance matrices, tracking status, loop closures, etc.).
+* **Calibration Analysis**
+  Evaluate confidence vs. failure probability (reliability diagrams, Brier score).
 
-- **Calibration Analysis**  
-  Evaluating how well the predicted confidence correlates with actual failure probabilities (e.g., via reliability diagrams, Brier score).
+* **Task-Aware Confidence**
+  Extend from generic navigation confidence to task-specific confidence.
 
-- **Task-Aware Confidence**  
-  Extending from generic navigation confidence to task-specific confidence (e.g., exploration, manipulation, human-robot interaction).
-
-- **Human-in-the-Loop**  
-  Integrating confidence as a signal for requesting operator assistance or supervision.
+* **Human-in-the-Loop**
+  Use confidence to trigger operator assistance or supervision.
 
 ---
 
-## 11. Repository Structure
+## Repository Structure
 
 ```text
 robot_confidence/
@@ -328,17 +362,15 @@ robot_confidence/
 
 ---
 
-## 12. Author & Acknowledgements
+## Author
 
-**Author:**  
-Panagiota Grosdouli  
+**Panagiota Grosdouli**
 
-This repository reflects my personal experimental work on confidence-aware robotics.  
-The code and ideas are developed independently as part of my own exploration of how uncertainty and reliability can be incorporated into ROS 2–based navigation and SLAM systems.
+This repository reflects my experimental work on confidence-aware robotics and integrating uncertainty/reliability into ROS 2 navigation and SLAM systems.
 
 ---
 
-## 13. License
+## License
 
-This project is released under the **MIT License**.  
-You are free to use, modify, and extend it for research or educational purposes, with appropriate attribution.
+Released under the **MIT License**.
+Free to use, modify, and extend for research or educational purposes with appropriate attribution.
